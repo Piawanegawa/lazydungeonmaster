@@ -3,6 +3,7 @@ import { OpenRouterClient } from "./openrouter";
 
 const TEST_COMMAND_ID = "lazy-dm-test-openrouter";
 const SCAN_COMMAND_ID = "lazy-dm-scan-folder";
+const PREP_COMMAND_ID = "lazy-dm-generate-prep-2-step";
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MB guardrail to avoid crashing on huge attachments.
 
 const DEFAULT_SETTINGS = {
@@ -28,6 +29,12 @@ export default class LazyDungeonMasterPlugin extends Plugin {
       id: SCAN_COMMAND_ID,
       name: "Lazy DM: Scan Folder",
       callback: () => this.scanFolderAndAppend(),
+    });
+
+    this.addCommand({
+      id: PREP_COMMAND_ID,
+      name: "Lazy DM: Generate Prep (2-step)",
+      callback: () => this.generatePrepTwoStep(),
     });
   }
 
@@ -170,6 +177,239 @@ export default class LazyDungeonMasterPlugin extends Plugin {
       console.error(message, error);
       new Notice(message);
       return null;
+    }
+  }
+
+  stripJsonFences(text) {
+    if (!text) return "";
+    const fencePattern = /^```(?:json)?\s*[\r\n]?|```$/g;
+    return text.replace(fencePattern, "").trim();
+  }
+
+  parseJsonContent(content) {
+    if (!content) return null;
+    try {
+      return JSON.parse(this.stripJsonFences(content));
+    } catch (error) {
+      console.warn("Failed to parse JSON content", error, content?.slice?.(0, 200));
+      return null;
+    }
+  }
+
+  async loadAssetsForFolder(folder) {
+    const summary = this.buildFolderSummary(folder);
+    const maps = [];
+    const pcs = [];
+
+    for (const map of summary.maps) {
+      const vaultFile = this.app.vault.getAbstractFileByPath(map.path);
+      const dataUrl = await this.loadFileAsDataUrl(vaultFile);
+      if (dataUrl) {
+        maps.push({ ...map, dataUrl });
+      }
+    }
+
+    for (const pc of summary.pcs) {
+      const vaultFile = this.app.vault.getAbstractFileByPath(pc.path);
+      const dataUrl = await this.loadFileAsDataUrl(vaultFile);
+      if (dataUrl) {
+        pcs.push({ ...pc, dataUrl });
+      }
+    }
+
+    return { maps, pcs, folderPath: summary.folderPath };
+  }
+
+  buildExtractorMessages({ maps, pcs }) {
+    const intro =
+      "Extract structured prep details from the provided maps and party sheets. Reply with STRICT JSON only.";
+
+    const schema = `The JSON must follow this structure:
+{
+  "maps": [
+    {
+      "name": "Name of the map (prefer the file name)",
+      "file": "file name",
+      "zones": [
+        { "zoneId": "A-1", "title": "Short title", "summary": "1-2 sentence summary" }
+      ]
+    }
+  ],
+  "zone_descriptions": [
+    { "zoneId": "A-1", "details": "Longer description including terrain, clues, secrets" }
+  ],
+  "connections": [
+    { "from": "A-1", "to": "A-2", "note": "How they connect; include cross-map leads" }
+  ],
+  "party_summary": {
+    "roles": "Party composition and roles",
+    "key_abilities": "Spells, maneuvers, notable items",
+    "weak_saves": "Notable weak defenses",
+    "senses": "Perception or sensory advantages"
+  },
+  "transitions": [
+    { "fromMap": "Map file name", "toMap": "Other map file", "hook": "Suggested transition scene" }
+  ]
+}`;
+
+    const contentBlocks = [
+      { type: "text", text: `${intro}\n${schema}\nUse zoneId prefixes like A-, B- per map.` },
+    ];
+
+    maps.forEach((map, index) => {
+      contentBlocks.push({ type: "text", text: `Map ${index + 1}: ${map.name} (${map.path || map.file})` });
+      contentBlocks.push({
+        type: "image_url",
+        image_url: { url: map.dataUrl, detail: "high" },
+      });
+    });
+
+    pcs.forEach((pc, index) => {
+      contentBlocks.push({ type: "text", text: `Character PDF ${index + 1}: ${pc.name}` });
+      contentBlocks.push({ type: "input_text", text: pc.dataUrl });
+    });
+
+    return [
+      {
+        role: "system",
+        content:
+          "You are an expert prep extractor. Respond with valid JSON only. Do not wrap responses in markdown fences.",
+      },
+      { role: "user", content: contentBlocks },
+    ];
+  }
+
+  buildSynthesizerMessages({ extractedJson, maps, pcs }) {
+    const filenames = {
+      maps: maps.map((map) => map.path || map.name),
+      pcs: pcs.map((pc) => pc.path || pc.name),
+    };
+
+    const instructions = `Erzeuge ein Markdown-Prep-Dokument auf Deutsch. Nutze NUR die gelieferten extrahierten Daten. Anforderungen:
+- Füge pro Karte zwei Links hinzu: "player" (Spieleransicht) und "gm_zones" (Zonenreferenz, auch wenn der Link nur ein Platzhalter ist).
+- Verknüpfe Szenen klar mit den jeweiligen zoneId aus den extrahierten Daten.
+- Baue einen starken Auftakt (Strong Start).
+- Liste 10 Geheimnisse & Hinweise mit vorgeschlagenen Drop-Zonen (zoneId).
+- Baue Begegnungen, die auf die Party zugeschnitten sind (Nutze party_summary).
+- Schlage Belohnungen vor.
+- Füge Übergangsszenen zwischen Karten basierend auf transitions hinzu.`;
+
+    return [
+      {
+        role: "system",
+        content: instructions,
+      },
+      {
+        role: "user",
+        content: `Dateinamen: ${JSON.stringify(filenames, null, 2)}\nExtrahierte Daten:\n${JSON.stringify(
+          extractedJson,
+          null,
+          2
+        )}`,
+      },
+    ];
+  }
+
+  async requestExtractor(payload) {
+    const { extractorModel, openrouterApiKey, openrouterBaseUrl } = this.settings;
+
+    const client = new OpenRouterClient({
+      baseUrl: openrouterBaseUrl,
+      apiKey: openrouterApiKey,
+    });
+
+    let lastContent = "";
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const response = await client.createChatCompletion({
+        model: extractorModel,
+        messages: payload,
+      });
+
+      lastContent = response?.choices?.[0]?.message?.content || "";
+      const parsed = this.parseJsonContent(lastContent);
+      if (parsed) {
+        return parsed;
+      }
+
+      if (attempt === 1) {
+        new Notice("Extractor returned invalid JSON. Retrying once...");
+      }
+    }
+
+    throw new Error("Extractor failed to produce valid JSON after retry.");
+  }
+
+  async requestSynthesizer(payload) {
+    const { synthesizerModel, openrouterApiKey, openrouterBaseUrl } = this.settings;
+
+    const client = new OpenRouterClient({
+      baseUrl: openrouterBaseUrl,
+      apiKey: openrouterApiKey,
+    });
+
+    const response = await client.createChatCompletion({
+      model: synthesizerModel,
+      messages: payload,
+    });
+
+    return response?.choices?.[0]?.message?.content || "";
+  }
+
+  async updateNoteWithPrep(note, markdown) {
+    const startMarker = "<!-- LAZY_DM_START -->";
+    const endMarker = "<!-- LAZY_DM_END -->";
+    const current = await this.app.vault.read(note);
+
+    const startIndex = current.indexOf(startMarker);
+    const endIndex = current.indexOf(endMarker);
+
+    let nextContent;
+    if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+      const before = current.slice(0, startIndex + startMarker.length);
+      const after = current.slice(endIndex);
+      nextContent = `${before}\n\n${markdown.trim()}\n\n${after}`;
+    } else {
+      nextContent = `${current.trim()}\n\n${startMarker}\n${markdown.trim()}\n${endMarker}\n`;
+    }
+
+    await this.app.vault.modify(note, nextContent);
+  }
+
+  async generatePrepTwoStep() {
+    const activeFile = this.app.workspace.getActiveFile();
+
+    if (!activeFile) {
+      new Notice("Open a note to generate prep.");
+      return;
+    }
+
+    const folder = activeFile.parent;
+    if (!folder) {
+      new Notice("Could not determine the folder for the current note.");
+      return;
+    }
+
+    try {
+      const assets = await this.loadAssetsForFolder(folder);
+
+      if (!assets.maps.length && !assets.pcs.length) {
+        new Notice("No maps or character PDFs found in the folder.");
+        return;
+      }
+
+      new Notice("Extracting structured prep from assets...");
+      const extractorMessages = this.buildExtractorMessages(assets);
+      const extracted = await this.requestExtractor(extractorMessages);
+
+      new Notice("Synthesizing final prep in German...");
+      const synthesizerMessages = this.buildSynthesizerMessages({ extractedJson: extracted, ...assets });
+      const markdown = await this.requestSynthesizer(synthesizerMessages);
+
+      await this.updateNoteWithPrep(activeFile, markdown);
+      new Notice("Lazy DM prep inserted into the note.");
+    } catch (error) {
+      console.error("Lazy DM prep generation failed", error);
+      new Notice("Prep generation failed. Check console for details.");
     }
   }
 }
