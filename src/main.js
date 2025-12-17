@@ -1,9 +1,19 @@
-import { Notice, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
+import {
+  FuzzySuggestModal,
+  Modal,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  TFile,
+} from "obsidian";
 import { OpenRouterClient } from "./openrouter";
 
 const TEST_COMMAND_ID = "lazy-dm-test-openrouter";
 const SCAN_COMMAND_ID = "lazy-dm-scan-folder";
 const PREP_COMMAND_ID = "lazy-dm-generate-prep-2-step";
+const ANNOTATE_GM_ZONES_COMMAND_ID = "lazy-dm-annotate-gm-zones";
+const OPEN_GM_ZONES_COMMAND_ID = "lazy-dm-open-gm-zones";
 const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MB guardrail to avoid crashing on huge attachments.
 
 const DEFAULT_SETTINGS = {
@@ -11,6 +21,7 @@ const DEFAULT_SETTINGS = {
   extractorModel: "z-ai/glm-4.6v",
   synthesizerModel: "deepseek/deepseek-v3.2",
   openrouterBaseUrl: "https://openrouter.ai/api/v1",
+  lastGmZonesPath: "",
 };
 
 export default class LazyDungeonMasterPlugin extends Plugin {
@@ -35,6 +46,18 @@ export default class LazyDungeonMasterPlugin extends Plugin {
       id: PREP_COMMAND_ID,
       name: "Lazy DM: Generate Prep (2-step)",
       callback: () => this.generatePrepTwoStep(),
+    });
+
+    this.addCommand({
+      id: ANNOTATE_GM_ZONES_COMMAND_ID,
+      name: "Lazy DM: Annotate Map (GM zones)",
+      callback: () => this.annotateGmZones(),
+    });
+
+    this.addCommand({
+      id: OPEN_GM_ZONES_COMMAND_ID,
+      name: "Lazy DM: Open GM Zones Map",
+      callback: () => this.openLastGmZonesMap(),
     });
   }
 
@@ -218,6 +241,78 @@ export default class LazyDungeonMasterPlugin extends Plugin {
     }
 
     return { maps, pcs, folderPath: summary.folderPath };
+  }
+
+  async pickMapFromFolder(folder) {
+    const summary = this.buildFolderSummary(folder);
+
+    if (!summary.maps.length) {
+      new Notice("No maps detected in the current folder.");
+      return null;
+    }
+
+    const selector = new MapSelectModal(this.app, summary.maps);
+    const selection = await selector.openAndGetSelection();
+
+    if (!selection) {
+      new Notice("Map selection cancelled.");
+      return null;
+    }
+
+    const file = this.app.vault.getAbstractFileByPath(selection.path);
+    if (!(file instanceof TFile)) {
+      new Notice("Selected map could not be loaded.");
+      return null;
+    }
+
+    return file;
+  }
+
+  async annotateGmZones() {
+    const activeFile = this.app.workspace.getActiveFile();
+
+    if (!activeFile) {
+      new Notice("Open a note to choose a map from its folder.");
+      return;
+    }
+
+    const folder = activeFile.parent;
+
+    if (!folder) {
+      new Notice("Could not determine the folder for the current note.");
+      return;
+    }
+
+    const mapFile = await this.pickMapFromFolder(folder);
+    if (!mapFile) {
+      return;
+    }
+
+    const dataUrl = await this.loadFileAsDataUrl(mapFile);
+    if (!dataUrl) {
+      return;
+    }
+
+    const modal = new GmZoneModal(this.app, this, mapFile, dataUrl);
+    modal.open();
+  }
+
+  async openLastGmZonesMap() {
+    const lastPath = this.settings.lastGmZonesPath;
+
+    if (!lastPath) {
+      new Notice("No GM zones map has been generated yet.");
+      return;
+    }
+
+    const file = this.app.vault.getAbstractFileByPath(lastPath);
+    if (!(file instanceof TFile)) {
+      new Notice("Stored GM zones map could not be found.");
+      return;
+    }
+
+    const leaf = this.app.workspace.getLeaf(true);
+    await leaf.openFile(file);
   }
 
   buildExtractorMessages({ maps, pcs }) {
@@ -411,6 +506,274 @@ export default class LazyDungeonMasterPlugin extends Plugin {
       console.error("Lazy DM prep generation failed", error);
       new Notice("Prep generation failed. Check console for details.");
     }
+  }
+}
+
+class MapSelectModal extends FuzzySuggestModal {
+  constructor(app, maps) {
+    super(app);
+    this.maps = maps;
+    this.promise = new Promise((resolve) => {
+      this.resolver = resolve;
+    });
+    this.chosen = false;
+  }
+
+  getItems() {
+    return this.maps;
+  }
+
+  getItemText(item) {
+    return item?.name || item?.path || "map";
+  }
+
+  onChooseItem(item) {
+    this.chosen = true;
+    this.resolver(item);
+  }
+
+  onClose() {
+    if (!this.chosen) {
+      this.resolver(null);
+    }
+  }
+
+  async openAndGetSelection() {
+    this.open();
+    return this.promise;
+  }
+}
+
+class GmZoneModal extends Modal {
+  constructor(app, plugin, mapFile, dataUrl) {
+    super(app);
+    this.plugin = plugin;
+    this.mapFile = mapFile;
+    this.dataUrl = dataUrl;
+    this.zoneCount = 6;
+    this.zonePrefix = "Z";
+    this.customIds = "";
+    this.points = [];
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    contentEl.createEl("h2", { text: `Annotate GM Zones: ${this.mapFile.basename}` });
+    contentEl.createEl("p", {
+      text: "Enter how many zones you want, or paste custom zone IDs. Click the map in order to place labels.",
+    });
+
+    const controls = contentEl.createDiv({ cls: "lazy-gm-zone-controls" });
+    controls.createEl("label", { text: "Zone count" });
+    this.countInput = controls.createEl("input", { type: "number" });
+    this.countInput.value = String(this.zoneCount);
+    this.countInput.min = "1";
+    this.countInput.addEventListener("change", () => this.handleConfigChange());
+
+    controls.createEl("label", { text: "Default prefix" });
+    this.prefixInput = controls.createEl("input", { type: "text" });
+    this.prefixInput.value = this.zonePrefix;
+    this.prefixInput.addEventListener("input", () => this.handleConfigChange());
+
+    controls.createEl("label", { text: "Custom zone IDs (comma or newline separated)" });
+    this.idsInput = controls.createEl("textarea");
+    this.idsInput.placeholder = "A-Z1, A-Z2, ...";
+    this.idsInput.addEventListener("input", () => this.handleConfigChange());
+
+    this.statusEl = contentEl.createEl("div", { cls: "lazy-gm-zone-status" });
+
+    this.mapContainer = contentEl.createDiv({ cls: "lazy-gm-zone-map" });
+    this.mapContainer.style.position = "relative";
+    this.mapContainer.style.maxHeight = "60vh";
+    this.mapContainer.style.overflow = "auto";
+
+    const imageWrapper = this.mapContainer.createDiv({ cls: "lazy-gm-zone-map-wrapper" });
+    imageWrapper.style.position = "relative";
+
+    this.imageEl = imageWrapper.createEl("img", {
+      attr: { src: this.dataUrl, alt: "GM map" },
+    });
+    this.imageEl.style.display = "block";
+    this.imageEl.style.width = "100%";
+    this.imageEl.style.height = "auto";
+
+    this.markerLayer = imageWrapper.createDiv({ cls: "lazy-gm-zone-markers" });
+    this.markerLayer.style.position = "absolute";
+    this.markerLayer.style.left = "0";
+    this.markerLayer.style.top = "0";
+    this.markerLayer.style.width = "100%";
+    this.markerLayer.style.height = "100%";
+    this.markerLayer.style.pointerEvents = "none";
+
+    imageWrapper.addEventListener("click", (event) => this.handleMapClick(event));
+
+    const actions = contentEl.createDiv({ cls: "lazy-gm-zone-actions" });
+    const clearButton = actions.createEl("button", { text: "Clear markers" });
+    clearButton.addEventListener("click", () => this.resetMarkers());
+
+    this.saveButton = actions.createEl("button", { text: "Save labeled map" });
+    this.saveButton.addEventListener("click", () => this.saveLabeledMap());
+
+    this.updateStatus();
+  }
+
+  handleConfigChange() {
+    this.zoneCount = Math.max(1, parseInt(this.countInput.value, 10) || 1);
+    this.zonePrefix = this.prefixInput.value?.trim() || "Z";
+    this.customIds = this.idsInput.value || "";
+    this.resetMarkers();
+    this.updateStatus();
+  }
+
+  getZoneIds() {
+    const provided = (this.customIds || "")
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (provided.length) {
+      return provided;
+    }
+
+    return Array.from({ length: this.zoneCount }, (_, index) => `${this.zonePrefix}${index + 1}`);
+  }
+
+  resetMarkers() {
+    this.points = [];
+    if (this.markerLayer) {
+      this.markerLayer.empty();
+    }
+    this.updateStatus();
+  }
+
+  updateStatus() {
+    const zoneIds = this.getZoneIds();
+    const nextIndex = this.points.length;
+    const remaining = zoneIds.length - nextIndex;
+
+    const nextLabel = zoneIds[nextIndex] || "All placed";
+    this.statusEl.setText(`Next label: ${nextLabel} | Remaining: ${Math.max(0, remaining)}`);
+
+    if (this.saveButton) {
+      this.saveButton.disabled = this.points.length !== zoneIds.length || !zoneIds.length;
+    }
+  }
+
+  handleMapClick(event) {
+    const zoneIds = this.getZoneIds();
+    const nextIndex = this.points.length;
+
+    if (!zoneIds.length) {
+      new Notice("Add at least one zone.");
+      return;
+    }
+
+    if (nextIndex >= zoneIds.length) {
+      new Notice("All zones placed. Clear markers to start over.");
+      return;
+    }
+
+    const rect = this.imageEl.getBoundingClientRect();
+    const xRel = (event.clientX - rect.left) / rect.width;
+    const yRel = (event.clientY - rect.top) / rect.height;
+
+    this.points.push({ id: zoneIds[nextIndex], x: xRel, y: yRel });
+    this.renderMarker(zoneIds[nextIndex], xRel, yRel);
+    this.updateStatus();
+  }
+
+  renderMarker(label, xRel, yRel) {
+    const marker = this.markerLayer.createDiv({ cls: "lazy-gm-zone-marker" });
+    marker.style.position = "absolute";
+    marker.style.transform = "translate(-50%, -50%)";
+    marker.style.left = `${(xRel * 100).toFixed(4)}%`;
+    marker.style.top = `${(yRel * 100).toFixed(4)}%`;
+    marker.style.background = "rgba(0, 0, 0, 0.75)";
+    marker.style.color = "white";
+    marker.style.padding = "4px 8px";
+    marker.style.borderRadius = "999px";
+    marker.style.fontWeight = "bold";
+    marker.style.fontSize = "12px";
+    marker.style.pointerEvents = "none";
+    marker.setText(label);
+  }
+
+  async saveLabeledMap() {
+    const zoneIds = this.getZoneIds();
+    if (this.points.length !== zoneIds.length) {
+      new Notice("Place all zones before saving.");
+      return;
+    }
+
+    try {
+      const labeledData = await this.renderLabeledImage();
+      const outputName = `${this.mapFile.basename}_gm_zones.png`;
+      const basePath = this.mapFile.parent?.path || "";
+      const outputPath = basePath ? `${basePath}/${outputName}` : outputName;
+
+      const existing = this.app.vault.getAbstractFileByPath(outputPath);
+      const binary = Buffer.from(labeledData, "base64");
+
+      if (existing instanceof TFile) {
+        await this.app.vault.modifyBinary(existing, binary);
+      } else {
+        await this.app.vault.createBinary(outputPath, binary);
+      }
+
+      this.plugin.settings.lastGmZonesPath = outputPath;
+      await this.plugin.saveSettings();
+
+      new Notice(`Saved GM zones map to ${outputName}.`);
+      this.close();
+    } catch (error) {
+      console.error("Failed to render GM zones map", error);
+      new Notice("Failed to create GM zones map. Check console for details.");
+    }
+  }
+
+  async renderLabeledImage() {
+    const zoneIds = this.getZoneIds();
+    const imageElement = await this.loadImageElement();
+    const canvas = document.createElement("canvas");
+    canvas.width = imageElement.naturalWidth;
+    canvas.height = imageElement.naturalHeight;
+    const ctx = canvas.getContext("2d");
+
+    ctx.drawImage(imageElement, 0, 0);
+
+    const fontSize = Math.max(18, Math.round(canvas.width * 0.02));
+    const radius = Math.max(18, Math.round(canvas.width * 0.02));
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    this.points.forEach((point, index) => {
+      const x = point.x * canvas.width;
+      const y = point.y * canvas.height;
+      const label = point.id || zoneIds[index] || `Z${index + 1}`;
+
+      ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "white";
+      ctx.fillText(label, x, y);
+    });
+
+    const pngDataUrl = canvas.toDataURL("image/png");
+    return pngDataUrl.split(",")[1];
+  }
+
+  loadImageElement() {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = (error) => reject(error);
+      img.src = this.dataUrl;
+    });
   }
 }
 
