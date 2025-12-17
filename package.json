@@ -1,0 +1,19 @@
+{
+  "name": "lazy-dungeon-master",
+  "version": "0.1.0",
+  "description": "Obsidian plugin that greets you with Lazy Dungeon Master charm.",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs --watch"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.21.5"
+  }
+}
