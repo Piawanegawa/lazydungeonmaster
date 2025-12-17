@@ -1,7 +1,8 @@
-import { Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { Notice, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
 import { OpenRouterClient } from "./openrouter";
 
 const TEST_COMMAND_ID = "lazy-dm-test-openrouter";
+const SCAN_COMMAND_ID = "lazy-dm-scan-folder";
 
 const DEFAULT_SETTINGS = {
   openrouterApiKey: "",
@@ -20,6 +21,12 @@ export default class LazyDungeonMasterPlugin extends Plugin {
       id: TEST_COMMAND_ID,
       name: "Lazy DM: Test OpenRouter",
       callback: () => this.testOpenRouter(),
+    });
+
+    this.addCommand({
+      id: SCAN_COMMAND_ID,
+      name: "Lazy DM: Scan Folder",
+      callback: () => this.scanFolderAndAppend(),
     });
   }
 
@@ -61,6 +68,57 @@ export default class LazyDungeonMasterPlugin extends Plugin {
     } catch (error) {
       console.error("OpenRouter test failed", error);
       new Notice("OpenRouter test failed. Check console for details.");
+    }
+  }
+
+  buildFolderSummary(folder) {
+    const files = folder?.children?.filter((item) => item instanceof TFile) || [];
+
+    const imagePattern = /\.(png|jpe?g|webp)$/i;
+    const playerImagePattern = /_player\.(png|jpe?g|webp)$/i;
+
+    const images = files.filter((file) => imagePattern.test(file.name));
+    const playerImages = images.filter((file) => playerImagePattern.test(file.name));
+    const selectedMaps = (playerImages.length ? playerImages : images).map((file) => ({
+      path: file.path,
+      name: file.basename,
+    }));
+
+    const pcs = files
+      .filter((file) => /\.pdf$/i.test(file.name))
+      .map((file) => ({ path: file.path, name: file.basename }));
+
+    return {
+      folderPath: folder?.path || "",
+      maps: selectedMaps,
+      pcs,
+    };
+  }
+
+  async scanFolderAndAppend() {
+    const activeFile = this.app.workspace.getActiveFile();
+
+    if (!activeFile) {
+      new Notice("Open a note to scan its folder.");
+      return;
+    }
+
+    const folder = activeFile.parent;
+
+    if (!folder) {
+      new Notice("Could not determine the folder for the current note.");
+      return;
+    }
+
+    const summary = this.buildFolderSummary(folder);
+    const jsonBlock = `\n\n\`\`\`json\n${JSON.stringify(summary, null, 2)}\n\`\`\``;
+
+    try {
+      await this.app.vault.append(activeFile, jsonBlock);
+      new Notice("Folder summary appended to the current note.");
+    } catch (error) {
+      console.error("Failed to append folder summary", error);
+      new Notice("Failed to append folder summary. Check console for details.");
     }
   }
 }
