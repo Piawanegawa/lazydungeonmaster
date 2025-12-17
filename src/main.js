@@ -3,6 +3,7 @@ import { OpenRouterClient } from "./openrouter";
 
 const TEST_COMMAND_ID = "lazy-dm-test-openrouter";
 const SCAN_COMMAND_ID = "lazy-dm-scan-folder";
+const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MB guardrail to avoid crashing on huge attachments.
 
 const DEFAULT_SETTINGS = {
   openrouterApiKey: "",
@@ -119,6 +120,56 @@ export default class LazyDungeonMasterPlugin extends Plugin {
     } catch (error) {
       console.error("Failed to append folder summary", error);
       new Notice("Failed to append folder summary. Check console for details.");
+    }
+  }
+
+  async loadFileAsDataUrl(file) {
+    if (!file) {
+      const message = "No file provided to load as data URL.";
+      console.error(message);
+      new Notice(message);
+      return null;
+    }
+
+    const extension = (file.extension || file.name?.split(".").pop() || "").toLowerCase();
+    const isImage = /^(png|jpe?g|webp)$/.test(extension);
+    const isPdf = extension === "pdf";
+    if (!isImage && !isPdf) {
+      const message = `Unsupported file type: ${extension || "unknown"}.`;
+      console.error(message, file.path || "(no path)");
+      new Notice(message);
+      return null;
+    }
+
+    try {
+      const binary = await this.app.vault.readBinary(file);
+      const byteLength = binary?.byteLength || binary?.length || 0;
+
+      if (byteLength > MAX_FILE_BYTES) {
+        const sizeMb = (byteLength / (1024 * 1024)).toFixed(1);
+        const maxMb = (MAX_FILE_BYTES / (1024 * 1024)).toFixed(1);
+        // Smoke check: large files should short-circuit before base64 conversion.
+        const message = `File is too large to load (${sizeMb} MB). Please reduce the size below ${maxMb} MB.`;
+        console.warn(message, file.path || "(no path)");
+        new Notice(message);
+        return null;
+      }
+
+      const base64 = Buffer.from(binary).toString("base64");
+      const mimeType = isPdf ? "application/pdf" : `image/${extension === "jpg" ? "jpeg" : extension}`;
+      const dataUrl = `data:${mimeType};base64,${base64}`;
+
+      // Smoke check: ensure data URL prefix stays intact for supported files.
+      if (!dataUrl.startsWith(`data:${mimeType};base64,`)) {
+        console.warn("Data URL prefix mismatch", { mimeType, dataUrl: dataUrl.slice(0, 40) });
+      }
+
+      return dataUrl;
+    } catch (error) {
+      const message = `Failed to load file as data URL: ${file.path || file.name}.`;
+      console.error(message, error);
+      new Notice(message);
+      return null;
     }
   }
 }
