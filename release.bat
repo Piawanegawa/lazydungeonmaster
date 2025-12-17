@@ -1,35 +1,57 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
-if not exist manifest.json (
-  echo manifest.json not found at repository root.
+REM Usage:
+REM   release.bat              -> uses package.json version
+REM   release.bat 0.1.0        -> uses explicit version
+
+set VERSION=%1
+if "%VERSION%"=="" (
+  for /f "usebackq delims=" %%v in (`node -p "require('./package.json').version"`) do set VERSION=%%v
+)
+
+if "%VERSION%"=="" (
+  echo Could not determine version. Pass it as argument: release.bat 0.1.0
   exit /b 1
 )
 
-if not exist main.js (
-  echo main.js not found at repository root. Build the plugin before packaging.
+set ZIP=lazy-dungeon-master-%VERSION%.zip
+set STAGE=dist-release
+
+if not exist "main.js" (
+  echo main.js not found. Run: npm run build
   exit /b 1
 )
 
-for /f "usebackq tokens=* delims=" %%v in (`powershell -NoProfile -Command "(Get-Content -Raw 'manifest.json' | ConvertFrom-Json).version"`) do set VERSION=%%v
-
-if not defined VERSION (
-  echo Unable to read version from manifest.json.
+if not exist "manifest.json" (
+  echo manifest.json not found.
   exit /b 1
 )
 
-set ZIPNAME=lazy-dungeon-master-%VERSION%.zip
-set FILES=main.js manifest.json
+if exist "%STAGE%" rmdir /s /q "%STAGE%"
+mkdir "%STAGE%" >nul
 
-if exist styles.css set FILES=%FILES% styles.css
-if exist README.md set FILES=%FILES% README.md
+copy /y "main.js" "%STAGE%\" >nul
+copy /y "manifest.json" "%STAGE%\" >nul
+if exist "styles.css" copy /y "styles.css" "%STAGE%\" >nul
+if exist "README.md" copy /y "README.md" "%STAGE%\" >nul
 
-powershell -NoProfile -Command "\
-  Remove-Item -Force '%ZIPNAME%' -ErrorAction SilentlyContinue; \
-  Compress-Archive -Path %FILES% -DestinationPath '%ZIPNAME%' -CompressionLevel Optimal\
-" || (
-  echo Failed to create %ZIPNAME%.
+if exist "%ZIP%" del /q "%ZIP%"
+
+where tar >nul 2>nul
+if errorlevel 1 (
+  echo tar.exe not found. On Windows 10/11 it is usually available. Alternative: install 7-Zip and adapt script.
   exit /b 1
 )
 
-echo Created %ZIPNAME% with: %FILES%
+tar -a -c -f "%ZIP%" -C "%STAGE%" *
+if errorlevel 1 (
+  echo Failed to create %ZIP%.
+  exit /b 1
+)
+
+rmdir /s /q "%STAGE%"
+echo Created %ZIP%
+
+endlocal
+exit /b 0

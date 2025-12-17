@@ -28,10 +28,11 @@ var import_obsidian2 = require("obsidian");
 var import_obsidian = require("obsidian");
 var OpenRouterClient = class {
   constructor({ baseUrl, apiKey }) {
-    this.baseUrl = baseUrl?.replace(/\/$/, "") || "";
+    this.baseUrl = (baseUrl == null ? void 0 : baseUrl.replace(/\/$/, "")) || "";
     this.apiKey = apiKey || "";
   }
   async createChatCompletion({ model, messages }) {
+    var _a;
     if (!this.apiKey) {
       const message = "OpenRouter API key is not set.";
       console.error(`[OpenRouter] ${message}`);
@@ -59,9 +60,9 @@ var OpenRouterClient = class {
         new import_obsidian.Notice(message);
         throw new Error(message);
       }
-      return response.json ?? JSON.parse(response.text || "{}");
+      return (_a = response.json) != null ? _a : JSON.parse(response.text || "{}");
     } catch (error) {
-      const message = `OpenRouter request failed: ${error?.message || error}`;
+      const message = `OpenRouter request failed: ${(error == null ? void 0 : error.message) || error}`;
       console.error(`[OpenRouter] ${message}`, error);
       new import_obsidian.Notice(message);
       throw error;
@@ -120,6 +121,7 @@ var LazyDungeonMasterPlugin = class extends import_obsidian2.Plugin {
     await this.saveData(this.settings);
   }
   async testOpenRouter() {
+    var _a, _b, _c;
     const { openrouterApiKey, openrouterBaseUrl, synthesizerModel } = this.settings;
     if (!openrouterApiKey) {
       new import_obsidian2.Notice("Set the OpenRouter API key in settings first.");
@@ -139,7 +141,7 @@ var LazyDungeonMasterPlugin = class extends import_obsidian2.Plugin {
           }
         ]
       });
-      const content = response?.choices?.[0]?.message?.content || "Received a response from OpenRouter.";
+      const content = ((_c = (_b = (_a = response == null ? void 0 : response.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content) || "Received a response from OpenRouter.";
       new import_obsidian2.Notice(`OpenRouter test succeeded: ${content}`.slice(0, 200));
     } catch (error) {
       console.error("OpenRouter test failed", error);
@@ -147,7 +149,8 @@ var LazyDungeonMasterPlugin = class extends import_obsidian2.Plugin {
     }
   }
   buildFolderSummary(folder) {
-    const files = folder?.children?.filter((item) => item instanceof import_obsidian2.TFile) || [];
+    var _a;
+    const files = ((_a = folder == null ? void 0 : folder.children) == null ? void 0 : _a.filter((item) => item instanceof import_obsidian2.TFile)) || [];
     const imagePattern = /\.(png|jpe?g|webp)$/i;
     const playerImagePattern = /_player\.(png|jpe?g|webp)$/i;
     const images = files.filter((file) => imagePattern.test(file.name));
@@ -158,7 +161,7 @@ var LazyDungeonMasterPlugin = class extends import_obsidian2.Plugin {
     }));
     const pcs = files.filter((file) => /\.pdf$/i.test(file.name)).map((file) => ({ path: file.path, name: file.basename }));
     return {
-      folderPath: folder?.path || "",
+      folderPath: (folder == null ? void 0 : folder.path) || "",
       maps: selectedMaps,
       pcs
     };
@@ -189,13 +192,14 @@ ${JSON.stringify(summary, null, 2)}
     }
   }
   async loadFileAsDataUrl(file) {
+    var _a;
     if (!file) {
       const message = "No file provided to load as data URL.";
       console.error(message);
       new import_obsidian2.Notice(message);
       return null;
     }
-    const extension = (file.extension || file.name?.split(".").pop() || "").toLowerCase();
+    const extension = (file.extension || ((_a = file.name) == null ? void 0 : _a.split(".").pop()) || "").toLowerCase();
     const isImage = /^(png|jpe?g|webp)$/.test(extension);
     const isPdf = extension === "pdf";
     if (!isImage && !isPdf) {
@@ -206,7 +210,7 @@ ${JSON.stringify(summary, null, 2)}
     }
     try {
       const binary = await this.app.vault.readBinary(file);
-      const byteLength = binary?.byteLength || binary?.length || 0;
+      const byteLength = (binary == null ? void 0 : binary.byteLength) || (binary == null ? void 0 : binary.length) || 0;
       if (byteLength > MAX_FILE_BYTES) {
         const sizeMb = (byteLength / (1024 * 1024)).toFixed(1);
         const maxMb = (MAX_FILE_BYTES / (1024 * 1024)).toFixed(1);
@@ -235,11 +239,12 @@ ${JSON.stringify(summary, null, 2)}
     return text.replace(fencePattern, "").trim();
   }
   parseJsonContent(content) {
+    var _a;
     if (!content) return null;
     try {
       return JSON.parse(this.stripJsonFences(content));
     } catch (error) {
-      console.warn("Failed to parse JSON content", error, content?.slice?.(0, 200));
+      console.warn("Failed to parse JSON content", error, (_a = content == null ? void 0 : content.slice) == null ? void 0 : _a.call(content, 0, 200));
       return null;
     }
   }
@@ -402,6 +407,7 @@ ${JSON.stringify(
     ];
   }
   async requestExtractor(payload) {
+    var _a, _b, _c;
     const { extractorModel, openrouterApiKey, openrouterBaseUrl } = this.settings;
     const client = new OpenRouterClient({
       baseUrl: openrouterBaseUrl,
@@ -413,7 +419,7 @@ ${JSON.stringify(
         model: extractorModel,
         messages: payload
       });
-      lastContent = response?.choices?.[0]?.message?.content || "";
+      lastContent = ((_c = (_b = (_a = response == null ? void 0 : response.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content) || "";
       const parsed = this.parseJsonContent(lastContent);
       if (parsed) {
         return parsed;
@@ -425,6 +431,7 @@ ${JSON.stringify(
     throw new Error("Extractor failed to produce valid JSON after retry.");
   }
   async requestSynthesizer(payload) {
+    var _a, _b, _c;
     const { synthesizerModel, openrouterApiKey, openrouterBaseUrl } = this.settings;
     const client = new OpenRouterClient({
       baseUrl: openrouterBaseUrl,
@@ -434,7 +441,7 @@ ${JSON.stringify(
       model: synthesizerModel,
       messages: payload
     });
-    return response?.choices?.[0]?.message?.content || "";
+    return ((_c = (_b = (_a = response == null ? void 0 : response.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content) || "";
   }
   async updateNoteWithPrep(note, markdown) {
     const startMarker = "<!-- LAZY_DM_START -->";
@@ -505,7 +512,7 @@ var MapSelectModal = class extends import_obsidian2.FuzzySuggestModal {
     return this.maps;
   }
   getItemText(item) {
-    return item?.name || item?.path || "map";
+    return (item == null ? void 0 : item.name) || (item == null ? void 0 : item.path) || "map";
   }
   onChooseItem(item) {
     this.chosen = true;
@@ -582,8 +589,9 @@ var GmZoneModal = class extends import_obsidian2.Modal {
     this.updateStatus();
   }
   handleConfigChange() {
+    var _a;
     this.zoneCount = Math.max(1, parseInt(this.countInput.value, 10) || 1);
-    this.zonePrefix = this.prefixInput.value?.trim() || "Z";
+    this.zonePrefix = ((_a = this.prefixInput.value) == null ? void 0 : _a.trim()) || "Z";
     this.customIds = this.idsInput.value || "";
     this.resetMarkers();
     this.updateStatus();
@@ -646,6 +654,7 @@ var GmZoneModal = class extends import_obsidian2.Modal {
     marker.setText(label);
   }
   async saveLabeledMap() {
+    var _a;
     const zoneIds = this.getZoneIds();
     if (this.points.length !== zoneIds.length) {
       new import_obsidian2.Notice("Place all zones before saving.");
@@ -654,7 +663,7 @@ var GmZoneModal = class extends import_obsidian2.Modal {
     try {
       const labeledData = await this.renderLabeledImage();
       const outputName = `${this.mapFile.basename}_gm_zones.png`;
-      const basePath = this.mapFile.parent?.path || "";
+      const basePath = ((_a = this.mapFile.parent) == null ? void 0 : _a.path) || "";
       const outputPath = basePath ? `${basePath}/${outputName}` : outputName;
       const existing = this.app.vault.getAbstractFileByPath(outputPath);
       const binary = Buffer.from(labeledData, "base64");
@@ -744,3 +753,4 @@ var LazyDMSettingsTab = class extends import_obsidian2.PluginSettingTab {
     );
   }
 };
+//# sourceMappingURL=main.js.map
