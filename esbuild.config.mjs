@@ -8,6 +8,7 @@ esbuild
     bundle: true,
     platform: "node",
     format: "cjs",
+    external: ["obsidian"],
     outfile: "main.js",
     sourcemap: watch,
     watch,
